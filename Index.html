@@ -1,0 +1,615 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1.0" />
+  <title>Access Control Game – Who Gets In?</title>
+
+  <!-- TailwindCSS (CDN) -->
+  <script src="https://cdn.tailwindcss.com"></script>
+
+  <!-- React 18 + ReactDOM (CDN) -->
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+
+  <!-- Babel (so we can write JSX in this single file) -->
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+</head>
+<body class="bg-slate-100">
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useEffect, useMemo, useRef, useState } = React;
+
+    // ----- Constants -----
+    const ACCESS_TYPES = [
+      { key: "DAC",  label: "DAC",  desc: "Owner decides who gets access." },
+      { key: "MAC",  label: "MAC",  desc: "Strict rules & security labels (central authority)." },
+      { key: "RBAC", label: "RBAC", desc: "Access by predefined roles in org." },
+      { key: "NDAC", label: "NDAC", desc: "Central authority or system manages access." },
+    ];
+
+    const DEFAULT_SCENARIOS = [
+      { id: 1, text: "Alice owns a file and chooses Bob can read it.", answer: "DAC" },
+      { id: 2, text: "Only users with 'Top Secret' clearance can open the document.", answer: "MAC" },
+      { id: 3, text: "HR staff can edit payroll; IT cannot.", answer: "RBAC" },
+      { id: 4, text: "System admin (not the owner) decides who can access the server.", answer: "NDAC" },
+      { id: 5, text: "A folder is labeled 'Confidential' and only those cleared can read it.", answer: "MAC" },
+      { id: 6, text: "The app grants permissions by job title: Nurse, Doctor, Admin.", answer: "RBAC" },
+      { id: 7, text: "File creator picks a small group of friends to view photos.", answer: "DAC" },
+      { id: 8, text: "A central policy engine updates who can enter the lab—owners can't change it.", answer: "NDAC" },
+      { id: 9, text: "Classified network only allows devices with 'Secret' label tags.", answer: "MAC" },
+      { id: 10, text: "New interns inherit read-only access via the 'Intern' role.", answer: "RBAC" },
+      { id: 11, text: "The document owner removes Dan from the share list.", answer: "DAC" },
+      { id: 12, text: "Ministry controls access to all records via centralized policies.", answer: "NDAC" },
+      { id: 13, text: "Only computers labeled ‘Confidential’ are allowed to open research documents, no matter who owns them.", answer: "MAC" },
+      { id: 14, text: "Advisers can update study plans, while students can only view them.", answer: "RBAC" },
+      { id: 15, text: "Samira creates a project folder and chooses exactly which classmates can view or edit the files", answer: "DAC" },
+      { id: 16, text: "The university’s IT system decides access to the exam portal; even professors cannot change who gets in.", answer: "NDAC" },
+      { id: 17, text: "Only the registrar’s office can change official student records, even professors cannot.", answer: "MAC" },
+      { id: 18, text: "Advisers can update study plans, while students can only view them.", answer: "RBAC" },
+      { id: 19, text: "The course team leader decides which teachers can view and grade assignments.", answer: "DAC" },
+      { id: 20, text: "Access to the FWA server is controlled by central IT rules, not by the course team leader.", answer: "NDAC" },
+    ];
+
+    // ----- Utils -----
+    function shuffle(array) {
+      const arr = [...array];
+      for (let i = arr.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [arr[i], arr[j]] = [arr[j], arr[i]];
+      }
+      return arr;
+    }
+    const prettyTime = (ms) => `${Math.max(0, Math.ceil(ms / 1000))}s`;
+
+    // ----- App -----
+    function App() {
+      const [screen, setScreen] = useState("lobby"); // lobby | play | results
+      const [teamNames, setTeamNames] = useState(["Team A", "Team B"]);
+      const [scores, setScores] = useState([0, 0]);
+      const [activeTeam, setActiveTeam] = useState(0);
+
+      const [pointsPerCorrect, setPointsPerCorrect] = useState(1);
+      const [penaltyWrong, setPenaltyWrong] = useState(0);
+      const [timerEnabled, setTimerEnabled] = useState(true);
+      const [questionTimerSec, setQuestionTimerSec] = useState(20);
+
+      const [scenarios, setScenarios] = useState(shuffle(DEFAULT_SCENARIOS));
+      const [qIndex, setQIndex] = useState(0);
+      const [feedback, setFeedback] = useState(null); // {correct:boolean, msg:string}
+      const [locked, setLocked] = useState(false);
+
+      // Timer
+      const [remainingMs, setRemainingMs] = useState(questionTimerSec * 1000);
+      const tickRef = useRef(null);
+
+      useEffect(() => {
+        if (screen !== "play" || !timerEnabled) return;
+        setRemainingMs(questionTimerSec * 1000);
+      }, [screen, questionTimerSec, timerEnabled]);
+
+      useEffect(() => {
+        if (screen !== "play" || !timerEnabled || locked) return;
+        const start = Date.now();
+        const end = start + questionTimerSec * 1000;
+        const step = () => {
+          const msLeft = end - Date.now();
+          setRemainingMs(msLeft);
+          if (msLeft <= 0) {
+            setLocked(true);
+            setFeedback({ correct: false, msg: "⏱️ Time's up!" });
+            return;
+          }
+          tickRef.current = requestAnimationFrame(step);
+        };
+        tickRef.current = requestAnimationFrame(step);
+        return () => tickRef.current && cancelAnimationFrame(tickRef.current);
+      }, [screen, qIndex, timerEnabled, questionTimerSec, locked]);
+
+      const current = scenarios[qIndex];
+      const progress = useMemo(
+        () => ((qIndex + 1) / scenarios.length) * 100,
+        [qIndex, scenarios.length]
+      );
+
+      // ----- Handlers -----
+      const startGame = () => {
+        setScores(new Array(teamNames.length).fill(0));
+        setActiveTeam(0);
+        setScenarios(shuffle(scenarios));
+        setQIndex(0);
+        setFeedback(null);
+        setLocked(false);
+        setScreen("play");
+      };
+
+      const resetGame = () => {
+        setScores(new Array(teamNames.length).fill(0));
+        setActiveTeam(0);
+        setScenarios(shuffle(scenarios));
+        setQIndex(0);
+        setFeedback(null);
+        setLocked(false);
+        setScreen("lobby");
+      };
+
+      const nextQuestion = () => {
+        if (qIndex + 1 >= scenarios.length) {
+          setScreen("results");
+          return;
+        }
+        setQIndex(qIndex + 1);
+        setFeedback(null);
+        setLocked(false);
+      };
+
+      const givePoints = (teamIdx, delta) => {
+        setScores((prev) => prev.map((s, i) => (i === teamIdx ? s + delta : s)));
+      };
+
+      const handleAnswer = (choice) => {
+        if (locked) return;
+        const correct = current.answer === choice;
+        setLocked(true);
+        if (correct) {
+          givePoints(activeTeam, pointsPerCorrect);
+          setFeedback({
+            correct: true,
+            msg: `✅ Correct! ${teamNames[activeTeam]} +${pointsPerCorrect}`,
+          });
+        } else {
+          if (penaltyWrong) givePoints(activeTeam, -penaltyWrong);
+          setFeedback({
+            correct: false,
+            msg: `❌ Not quite. Answer: ${current.answer}${
+              penaltyWrong ? ` | -${penaltyWrong}` : ""
+            }`,
+          });
+        }
+      };
+
+      const addTeam = () => {
+        if (teamNames.length >= 6) return;
+        const nextName = `Team ${String.fromCharCode(65 + teamNames.length)}`;
+        setTeamNames([...teamNames, nextName]);
+        setScores([...scores, 0]);
+      };
+
+      const removeTeam = (i) => {
+        if (teamNames.length <= 2) return;
+        const newTeams = teamNames.filter((_, idx) => idx !== i);
+        const newScores = scores.filter((_, idx) => idx !== i);
+        setTeamNames(newTeams);
+        setScores(newScores);
+        if (activeTeam >= newTeams.length) setActiveTeam(0);
+      };
+
+      const addScenario = (text, answer) => {
+        const trimmed = (text || "").trim();
+        if (!trimmed) return;
+        const id = Math.max(0, ...scenarios.map((s) => s.id)) + 1;
+        setScenarios([...scenarios, { id, text: trimmed, answer }]);
+      };
+
+      const exportScoresCSV = () => {
+        const rows = [
+          ["Team", "Score"],
+          ...teamNames.map((t, i) => [t, scores[i]]),
+        ];
+        const csv = rows
+          .map((r) => r.map((c) => `"${String(c).replaceAll('"', '""')}"`).join(","))
+          .join("\n");
+        const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = "access-control-game-scores.csv";
+        a.click();
+        URL.revokeObjectURL(url);
+      };
+
+      return (
+        <div className="min-h-screen w-full bg-gradient-to-br from-slate-50 to-slate-100 text-slate-800 p-4 sm:p-8">
+          <div className="max-w-5xl mx-auto">
+            <header className="flex items-center justify-between mb-6">
+              <h1 className="text-2xl sm:text-3xl font-bold tracking-tight">🎲 Access Control Game: Who Gets In?</h1>
+              <div className="flex items-center gap-2">
+                <button
+                  className="px-3 py-2 rounded-xl bg-white shadow hover:shadow-md border text-sm"
+                  onClick={exportScoresCSV}
+                >
+                  Export Scores
+                </button>
+              </div>
+            </header>
+
+            {screen === "lobby" && (
+              <Lobby
+                teamNames={teamNames}
+                setTeamNames={setTeamNames}
+                scores={scores}
+                setScores={setScores}
+                addTeam={addTeam}
+                removeTeam={removeTeam}
+                activeTeam={activeTeam}
+                setActiveTeam={setActiveTeam}
+                pointsPerCorrect={pointsPerCorrect}
+                setPointsPerCorrect={setPointsPerCorrect}
+                penaltyWrong={penaltyWrong}
+                setPenaltyWrong={setPenaltyWrong}
+                questionTimerSec={questionTimerSec}
+                setQuestionTimerSec={setQuestionTimerSec}
+                timerEnabled={timerEnabled}
+                setTimerEnabled={setTimerEnabled}
+                scenarios={scenarios}
+                addScenario={addScenario}
+                startGame={startGame}
+              />
+            )}
+
+            {screen === "play" && (
+              <Play
+                current={current}
+                qIndex={qIndex}
+                total={scenarios.length}
+                progress={progress}
+                teamNames={teamNames}
+                scores={scores}
+                activeTeam={activeTeam}
+                setActiveTeam={setActiveTeam}
+                onAnswer={handleAnswer}
+                feedback={feedback}
+                nextQuestion={nextQuestion}
+                remainingMs={remainingMs}
+                timerEnabled={timerEnabled}
+                locked={locked}
+                resetGame={resetGame}
+              />
+            )}
+
+            {screen === "results" && (
+              <Results
+                teamNames={teamNames}
+                scores={scores}
+                onReplay={startGame}
+                onLobby={resetGame}
+              />
+            )}
+          </div>
+        </div>
+      );
+    }
+
+    // ----- Lobby -----
+    function Lobby({
+      teamNames, setTeamNames, scores, setScores,
+      addTeam, removeTeam, activeTeam, setActiveTeam,
+      pointsPerCorrect, setPointsPerCorrect, penaltyWrong, setPenaltyWrong,
+      questionTimerSec, setQuestionTimerSec, timerEnabled, setTimerEnabled,
+      scenarios, addScenario, startGame
+    }) {
+      const [showHelp, setShowHelp] = useState(true);
+      const [newScenarioText, setNewScenarioText] = useState("");
+      const [newScenarioAns, setNewScenarioAns] = useState("DAC");
+
+      const updateTeam = (i, value) => {
+        const next = [...teamNames];
+        next[i] = value;
+        setTeamNames(next);
+      };
+
+      return (
+        <div className="grid lg:grid-cols-5 gap-5">
+          <div className="lg:col-span-3 space-y-5">
+            <section className="p-4 bg-white rounded-2xl shadow border">
+              <div className="flex items-center justify-between">
+                <h2 className="font-semibold mb-3">Teams</h2>
+                <button
+                  className="px-3 py-2 rounded-xl bg-white shadow hover:shadow-md border text-sm"
+                  onClick={() => setShowHelp((v) => !v)}
+                >
+                  {showHelp ? "Hide Help" : "Show Help"}
+                </button>
+              </div>
+
+              {showHelp && (
+                <div className="grid sm:grid-cols-2 gap-4 mb-4">
+                  <div className="p-3 rounded-xl bg-slate-50 border">
+                    <h3 className="font-semibold mb-1 text-sm">How to Play</h3>
+                    <ol className="list-decimal ml-5 text-sm space-y-1">
+                      <li>Set teams and rules below.</li>
+                      <li>Start the game. A scenario appears.</li>
+                      <li>Select the <b>Active Team</b>, then click the correct access model.</li>
+                      <li>Correct: earn points. Wrong: optional penalty.</li>
+                      <li>Click <b>Next</b> to continue. Highest score wins!</li>
+                    </ol>
+                  </div>
+                  <div className="p-3 rounded-xl bg-slate-50 border">
+                    <h3 className="font-semibold mb-1 text-sm">Cheat Sheet</h3>
+                    <ul className="text-sm space-y-1">
+                      <li><b>DAC</b> – Owner decides access.</li>
+                      <li><b>NDAC</b> – Central authority decides (umbrella for MAC/RBAC).</li>
+                      <li><b>MAC</b> – Labels & strict rules (e.g., clearance).</li>
+                      <li><b>RBAC</b> – Access by role (HR, IT, Nurse...).</li>
+                    </ul>
+                  </div>
+                </div>
+              )}
+
+              <div className="space-y-2">
+                {teamNames.map((t, i) => (
+                  <div key={i} className="flex items-center gap-2">
+                    <input
+                      className="flex-1 px-3 py-2 rounded-xl border"
+                      value={t}
+                      onChange={(e) => updateTeam(i, e.target.value)}
+                    />
+                    <button
+                      className="px-3 py-2 rounded-xl bg-slate-50 border hover:bg-slate-100"
+                      onClick={() => removeTeam(i)}
+                      disabled={teamNames.length <= 2}
+                      title={teamNames.length <= 2 ? "At least 2 teams required" : "Remove team"}
+                    >
+                      Remove
+                    </button>
+                  </div>
+                ))}
+                <div className="flex gap-2">
+                  <button className="px-3 py-2 rounded-xl bg-slate-900 text-white hover:opacity-90" onClick={addTeam}>Add Team</button>
+                  <button
+                    className="px-3 py-2 rounded-xl bg-white border"
+                    onClick={() => setScores(new Array(teamNames.length).fill(0))}
+                  >Reset Scores</button>
+                </div>
+              </div>
+            </section>
+
+            <section className="p-4 bg-white rounded-2xl shadow border">
+              <h2 className="font-semibold mb-3">Rules</h2>
+              <div className="grid sm:grid-cols-2 gap-3">
+                <label className="text-sm">
+                  <div className="mb-1">Points per correct</div>
+                  <input
+                    type="number"
+                    className="w-full px-3 py-2 rounded-xl border"
+                    value={pointsPerCorrect}
+                    onChange={(e) => setPointsPerCorrect(Math.max(1, Number(e.target.value) || 1))}
+                  />
+                </label>
+                <label className="text-sm">
+                  <div className="mb-1">Penalty for wrong</div>
+                  <input
+                    type="number"
+                    className="w-full px-3 py-2 rounded-xl border"
+                    value={penaltyWrong}
+                    onChange={(e) => setPenaltyWrong(Math.max(0, Number(e.target.value) || 0))}
+                  />
+                </label>
+                <label className="text-sm flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    checked={timerEnabled}
+                    onChange={(e) => setTimerEnabled(e.target.checked)}
+                  />
+                  Enable question timer
+                </label>
+                <label className="text-sm">
+                  <div className="mb-1">Timer seconds</div>
+                  <input
+                    type="number"
+                    className="w-full px-3 py-2 rounded-xl border"
+                    value={questionTimerSec}
+                    onChange={(e) => setQuestionTimerSec(Math.max(5, Number(e.target.value) || 5))}
+                  />
+                </label>
+              </div>
+            </section>
+
+            <section className="p-4 bg-white rounded-2xl shadow border">
+              <h2 className="font-semibold mb-3">Custom Scenarios</h2>
+              <div className="grid sm:grid-cols-5 gap-3">
+                <textarea
+                  className="sm:col-span-3 min-h-[88px] px-3 py-2 rounded-xl border"
+                  placeholder="Write a scenario..."
+                  value={newScenarioText}
+                  onChange={(e) => setNewScenarioText(e.target.value)}
+                />
+                <div className="sm:col-span-2 space-y-3">
+                  <label className="text-sm block">
+                    <div className="mb-1">Correct Answer</div>
+                    <select
+                      className="w-full px-3 py-2 rounded-xl border"
+                      value={newScenarioAns}
+                      onChange={(e) => setNewScenarioAns(e.target.value)}
+                    >
+                      {ACCESS_TYPES.map((t) => (
+                        <option key={t.key} value={t.key}>{t.label}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <button
+                    className="w-full px-3 py-2 rounded-xl bg-slate-900 text-white hover:opacity-90"
+                    onClick={() => { addScenario(newScenarioText, newScenarioAns); setNewScenarioText(""); }}
+                  >Add Scenario</button>
+                </div>
+              </div>
+              <div className="mt-3 text-xs text-slate-500">Tip: Add examples from your course/organization for relevance.</div>
+            </section>
+          </div>
+
+          <aside className="lg:col-span-2 space-y-5">
+            <section className="p-4 bg-white rounded-2xl shadow border">
+              <h2 className="font-semibold mb-3">Scenario Bank ({scenarios.length})</h2>
+              <div className="h-[280px] overflow-auto pr-1 space-y-2">
+                {scenarios.map((s) => (
+                  <div key={s.id} className="p-3 rounded-xl border bg-slate-50 flex items-start gap-2">
+                    <span className="px-2 py-1 text-xs rounded-lg bg-white border">{s.answer}</span>
+                    <p className="text-sm">{s.text}</p>
+                  </div>
+                ))}
+              </div>
+              <div className="mt-3 flex gap-2">
+                <button className="px-3 py-2 rounded-xl bg-slate-900 text-white hover:opacity-90" onClick={startGame}>Start Game</button>
+                <button className="px-3 py-2 rounded-xl bg-white border" onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })}>Back to Top</button>
+              </div>
+            </section>
+
+            <section className="p-4 bg-white rounded-2xl shadow border">
+              <h2 className="font-semibold mb-3">Quick Reference</h2>
+              <ul className="text-sm space-y-2">
+                {ACCESS_TYPES.map((t) => (
+                  <li key={t.key} className="flex items-start gap-2">
+                    <span className="px-2 py-0.5 text-xs rounded-lg bg-slate-100 border shrink-0 w-14 text-center">{t.label}</span>
+                    <span>{t.desc}</span>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          </aside>
+        </div>
+      );
+    }
+
+    // ----- Play -----
+    function Play({
+      current, qIndex, total, progress, teamNames, scores,
+      activeTeam, setActiveTeam, onAnswer, feedback, nextQuestion,
+      remainingMs, timerEnabled, locked, resetGame
+    }) {
+      return (
+        <div className="space-y-6">
+          <div className="p-4 bg-white rounded-2xl shadow border">
+            <div className="flex items-center gap-3 mb-3">
+              <div className="flex-1 h-2 bg-slate-200 rounded-full overflow-hidden">
+                <div className="h-full bg-slate-900" style={{ width: `${progress}%` }} />
+              </div>
+              <div className="text-xs text-slate-600">{qIndex + 1} / {total}</div>
+            </div>
+            <div className="grid sm:grid-cols-3 gap-3">
+              <div className="sm:col-span-2">
+                <div className="text-xs uppercase tracking-wide text-slate-500 mb-1">Scenario</div>
+                <div className="text-lg font-medium">{current.text}</div>
+              </div>
+              <div className="flex sm:justify-end items-center gap-3">
+                <label className="text-sm">
+                  <div className="mb-1">Active Team</div>
+                  <select
+                    className="px-3 py-2 rounded-xl border"
+                    value={activeTeam}
+                    onChange={(e) => setActiveTeam(Number(e.target.value))}
+                  >
+                    {teamNames.map((t, i) => (
+                      <option key={i} value={i}>{t}</option>
+                    ))}
+                  </select>
+                </label>
+                {timerEnabled && (
+                  <div className={`px-3 py-2 rounded-xl border text-sm ${remainingMs <= 5000 ? 'bg-red-50 border-red-200' : 'bg-slate-50'}`}>
+                    ⏱️ {prettyTime(remainingMs)}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+
+          <div className="grid sm:grid-cols-2 gap-4">
+            {ACCESS_TYPES.map((t) => (
+              <button
+                key={t.key}
+                className={`p-4 rounded-2xl border bg-white shadow hover:shadow-md text-left ${locked ? 'opacity-75 cursor-not-allowed' : ''}`}
+                onClick={() => onAnswer(t.key)}
+                disabled={locked}
+              >
+                <div className="text-base font-semibold">{t.label}</div>
+                <div className="text-sm text-slate-600">{t.desc}</div>
+              </button>
+            ))}
+          </div>
+
+          <div className="grid lg:grid-cols-3 gap-4">
+            <div className="lg:col-span-2 p-4 bg-white rounded-2xl shadow border min-h-[72px] flex items-center justify-between">
+              <div className={`text-sm ${feedback ? '' : 'text-slate-500'}`}>
+                {feedback ? feedback.msg : 'Pick the correct access control type.'}
+              </div>
+              <div className="flex items-center gap-2">
+                <button className="px-3 py-2 rounded-xl bg-white border" onClick={resetGame}>Lobby</button>
+                <button className="px-3 py-2 rounded-xl bg-slate-900 text-white hover:opacity-90" onClick={nextQuestion}>Next ➜</button>
+              </div>
+            </div>
+            <Scoreboard teamNames={teamNames} scores={scores} activeTeam={activeTeam} setActiveTeam={setActiveTeam} />
+          </div>
+        </div>
+      );
+    }
+
+    // ----- Scoreboard -----
+    function Scoreboard({ teamNames, scores, activeTeam, setActiveTeam }) {
+      const leaders = useMemo(() => {
+        const max = Math.max(...scores);
+        return scores.map((s, i) => (s === max ? i : -1)).filter((x) => x !== -1);
+      }, [scores]);
+
+      return (
+        <div className="p-4 bg-white rounded-2xl shadow border">
+          <div className="flex items-center justify-between mb-2">
+            <h3 className="font-semibold">Scoreboard</h3>
+            <div className="text-xs text-slate-500">Click a team to set active</div>
+          </div>
+          <div className="grid gap-2">
+            {teamNames.map((t, i) => (
+              <button
+                key={i}
+                className={`flex items-center justify-between px-3 py-2 rounded-xl border text-left ${i===activeTeam ? 'bg-slate-900 text-white' : 'bg-slate-50'} ${leaders.includes(i) ? 'ring-2 ring-amber-300' : ''}`}
+                onClick={() => setActiveTeam(i)}
+              >
+                <span className="font-medium">{t}</span>
+                <span className="text-sm">{scores[i]}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      );
+    }
+
+    // ----- Results -----
+    function Results({ teamNames, scores, onReplay, onLobby }) {
+      const ranked = [...teamNames.map((t, i) => ({ team: t, score: scores[i] }))].sort((a, b) => b.score - a.score);
+      const top = ranked[0];
+      return (
+        <div className="space-y-6">
+          <div className="p-6 bg-white rounded-2xl shadow border text-center">
+            <h2 className="text-2xl font-bold mb-2">🏁 Final Scores</h2>
+            <p className="text-sm text-slate-600 mb-4">Great job everyone!</p>
+            <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3 max-w-3xl mx-auto mb-4">
+              {ranked.map((r, idx) => (
+                <div key={idx} className={`p-4 rounded-2xl border ${idx===0 ? 'bg-amber-50 border-amber-200' : 'bg-slate-50'}`}>
+                  <div className="font-semibold">{idx+1}. {r.team}</div>
+                  <div className="text-sm text-slate-600">Score: {r.score}</div>
+                </div>
+              ))}
+            </div>
+            <div className="text-lg font-semibold mb-6">🏆 Winner: {top.team}</div>
+            <div className="flex items-center justify-center gap-3">
+              <button className="px-4 py-2 rounded-xl bg-slate-900 text-white hover:opacity-90" onClick={onReplay}>Play Again</button>
+              <button className="px-4 py-2 rounded-xl bg-white border" onClick={onLobby}>Back to Lobby</button>
+            </div>
+          </div>
+
+          <div className="p-4 bg-white rounded-2xl shadow border">
+            <h3 className="font-semibold mb-2">Teacher Tips</h3>
+            <ul className="text-sm list-disc ml-5 space-y-1">
+              <li>Use students' own projects to create custom scenarios.</li>
+              <li>Vary points per round or double the final question for excitement.</li>
+              <li>Ask teams to justify their answers in one sentence.</li>
+            </ul>
+          </div>
+        </div>
+      );
+    }
+
+    // Mount app
+    ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+  </script>
+</body>
+</html>
